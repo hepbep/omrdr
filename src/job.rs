@@ -158,3 +158,22 @@ pub fn render_job(
     let _ = fs::remove_file(&audio);
     res
 }
+
+pub fn clear_dir(dir: &Path) -> usize {
+    let Ok(rd) = fs::read_dir(dir) else { return 0 };
+    let mut n = 0;
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let is_index = p.file_name().and_then(|f| f.to_str()) == Some("index.json");
+        if matches!(ext.as_str(), "osr" | "osz" | "part") || is_index {
+            if fs::remove_file(&p).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    n
+}

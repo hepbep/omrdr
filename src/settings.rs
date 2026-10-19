@@ -10,7 +10,9 @@ pub struct Settings {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    pub scroll_speed: f32, // pixels per ms at 720p
+    pub mania_speed: f32, // osu!mania scroll speed, 1 to 40
+    pub use_sv: bool,     // follow the map's SV changes
+    pub show_judgements: bool,
     pub column_width: f32, // pixels at 720p
     pub hit_position: f32, // hit line as a fraction of the height
     pub quality_crf: u32,  // x264 quality, lower is better
@@ -30,7 +32,9 @@ impl Default for Settings {
             width: 1280,
             height: 720,
             fps: 60,
-            scroll_speed: 0.6,
+            mania_speed: 20.0,
+            use_sv: true,
+            show_judgements: true,
             column_width: 64.0,
             hit_position: 0.83,
             quality_crf: 18,

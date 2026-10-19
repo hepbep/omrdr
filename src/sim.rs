@@ -51,7 +51,6 @@ impl Counts {
     }
 }
 
-/// One judgement. `time` is when it happened, `note_time` identifies the note.
 #[derive(Clone, Copy, Debug)]
 pub struct HitEvent {
     pub time: f64,
@@ -194,22 +193,26 @@ fn weight(g: Grade) -> f32 {
     }
 }
 
-/// Running combo and accuracy. Index k holds the value after the first k events.
 pub struct Stats {
     pub combo: Vec<u32>,
     pub acc: Vec<f32>,
+    pub counts: Vec<[u32; 6]>, 
 }
 
 pub fn stats(events: &[HitEvent], meh_breaks: bool) -> Stats {
     let mut combo = vec![0u32];
     let mut acc = vec![1.0f32];
+    let mut counts = vec![[0u32; 6]];
     let (mut c, mut sum) = (0u32, 0.0f32);
+    let mut tally = [0u32; 6];
     for (i, e) in events.iter().enumerate() {
         let step = if e.is_hold { 2 } else { 1 };
         c = if e.grade == Grade::Miss || (meh_breaks && e.grade == Grade::Meh) { 0 } else { c + step };
         sum += weight(e.grade);
+        tally[e.grade as usize] += 1;
         combo.push(c);
         acc.push(sum / (300.0 * (i as f32 + 1.0)));
+        counts.push(tally);
     }
-    Stats { combo, acc }
+    Stats { combo, acc, counts }
 }

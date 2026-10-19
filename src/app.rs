@@ -42,6 +42,7 @@ pub struct App {
     cancel: Arc<AtomicBool>,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
+    confirm_clear: bool,
 }
 
 impl App {
@@ -52,6 +53,7 @@ impl App {
         Self {
             settings,
             dirty: false,
+            confirm_clear: false,
             stage: Stage::Idle,
             prepared: None,
             replay_path: None,
@@ -199,6 +201,7 @@ impl eframe::App for App {
         let before = self.settings.clone();
         let (mut want_render, mut want_cancel, mut pick_replay, mut pick_osz) =
             (false, false, false, false);
+        let mut want_clear = false;
 
         egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -347,7 +350,16 @@ impl eframe::App for App {
                                 }
                             }
                         });
-                    ui.add(egui::Slider::new(&mut st.scroll_speed, 0.2..=1.5).text("Scroll speed"));
+                    ui.add(
+                        egui::Slider::new(&mut st.mania_speed, 1.0..=40.0)
+                            .step_by(1.0)
+                            .text("Scroll speed"),
+                    );
+                    ui.small(format!(
+                        "Notes take {:.0} ms to travel from the top of the screen to the hit line",
+                        11485.0 / st.mania_speed.max(1.0)
+                    ));
+                    ui.checkbox(&mut st.use_sv, "Follow the map's scroll velocity (SV) changes");
                     ui.add(egui::Slider::new(&mut st.column_width, 40.0..=110.0).text("Column width"));
                     ui.add(egui::Slider::new(&mut st.hit_position, 0.6..=0.95).text("Hit line height"));
                     ui.add(egui::Slider::new(&mut st.music_volume, 0.0..=1.0).text("Music volume"));
@@ -359,6 +371,7 @@ impl eframe::App for App {
                     ui.checkbox(&mut st.show_accuracy, "Show accuracy");
                     ui.checkbox(&mut st.show_hit_error, "Show hit error bar");
                     ui.checkbox(&mut st.show_progress, "Show progress bar");
+                    ui.checkbox(&mut st.show_judgements, "Show judgement counts");
 
                     ui.separator();
                     ui.label(format!("Data folder: {}", st.data_dir.display()));
@@ -390,8 +403,37 @@ impl eframe::App for App {
                                 ui.label("Client secret");
                                 ui.add(egui::TextEdit::singleline(&mut st.osu_client_secret).password(true));
                             });
+                            
                         },
                     );
+                    ui.separator();
+                    let red = egui::Color32::from_rgb(180, 40, 40);
+                    if !self.confirm_clear {
+                        let btn = egui::Button::new(
+                            egui::RichText::new("Clear replays and beatmaps").color(egui::Color32::WHITE),
+                        )
+                        .fill(red);
+                        if ui.add_enabled(!busy, btn).clicked() {
+                            self.confirm_clear = true;
+                        }
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            "Delete every replay and beatmap in the folders? Videos in output are kept.",
+                        );
+                        ui.horizontal(|ui| {
+                            let yes = egui::Button::new(
+                                egui::RichText::new("Yes, delete").color(egui::Color32::WHITE),
+                            )
+                            .fill(red);
+                            if ui.add(yes).clicked() {
+                                want_clear = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.confirm_clear = false;
+                            }
+                        });
+                    }
                 });
 
                 // Log
@@ -435,6 +477,20 @@ impl eframe::App for App {
         }
         if want_render {
             self.start_render(ctx);
+        }
+
+                if want_render {
+            self.start_render(ctx);
+        }
+        if want_clear && !self.busy() {
+            self.confirm_clear = false;
+            let replays = job::clear_dir(&self.settings.replays_dir());
+            let maps = job::clear_dir(&self.settings.beatmaps_dir());
+            self.prepared = None;
+            self.replay_path = None;
+            self.stage = Stage::Idle;
+            self.log.clear();
+            self.log.push(format!("deleted {replays} replay file(s) and {maps} beatmap file(s)"));
         }
     }
 }

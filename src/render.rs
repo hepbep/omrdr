@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 
 use crate::{
-    beatmap::Beatmap,
+    beatmap::{Beatmap, TimingPoint},
     replay::Frame,
     settings::Settings,
     sim::{Grade, HitEvent, Stats},
@@ -81,6 +81,34 @@ fn column_color(c: usize, keys: usize) -> Rgba {
     if c.min(keys - 1 - c) % 2 == 0 { [235, 235, 245, 255] } else { [110, 170, 255, 255] }
 }
 
+/// Scroll position segments: (start time, position at start, SV multiplier).
+fn build_scroll(bm: &Beatmap, use_sv: bool) -> Vec<(f64, f64, f64)> {
+    let mut segs = vec![(-1.0e7_f64, 0.0_f64, 1.0_f64)];
+    if !use_sv {
+        return segs;
+    }
+    let mut pts: Vec<&TimingPoint> = bm.timing.iter().collect();
+    pts.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+    for p in pts {
+        let mult = if p.uninherited {
+            1.0 // a red line resets SV
+        } else if p.beat_length < 0.0 {
+            (-100.0 / p.beat_length).clamp(0.01, 10.0)
+        } else {
+            1.0
+        };
+        let &(st, sp, sm) = segs.last().unwrap();
+        segs.push((p.time, sp + (p.time - st) * sm, mult));
+    }
+    segs
+}
+
+fn scroll_pos(segs: &[(f64, f64, f64)], t: f64) -> f64 {
+    let i = segs.partition_point(|s| s.0 <= t).saturating_sub(1);
+    let (st, sp, sm) = segs[i];
+    sp + (t - st) * sm
+}
+
 struct Scene<'a> {
     bm: &'a Beatmap,
     frames: &'a [Frame],
@@ -95,11 +123,13 @@ struct Scene<'a> {
     col_w: f32,
     hit_y: f32,
     note_h: f32,
-    px_per_ms: f32,
+    px_per_unit: f32,
+    scroll: Vec<(f64, f64, f64)>,
     show_combo: bool,
     show_acc: bool,
     show_err: bool,
     show_progress: bool,
+    show_judgements: bool,
     start_ms: f64,
     end_ms: f64,
 }
@@ -110,7 +140,10 @@ impl Scene<'_> {
             (self.s, self.keys, self.x0, self.col_w, self.hit_y, self.note_h);
         let (w, h) = (self.w, self.h);
         let field_w = keys as f32 * cw;
-        let ypos = |t: f64| hy - ((t - now) as f32) * self.px_per_ms;
+        let now_pos = scroll_pos(&self.scroll, now);
+        let ypos = |t: f64| {
+            hy - ((scroll_pos(&self.scroll, t) - now_pos) as f32) * self.px_per_unit
+        };
 
         pm.fill(Color::from_rgba8(10, 10, 16, 255));
         fill(pm, x0, 0.0, field_w, h, [20, 20, 30, 255]);
@@ -190,6 +223,25 @@ impl Scene<'_> {
                 &format!("{:.2}", self.stats.acc[n] * 100.0),
                 w - 130.0 * s, 24.0 * s, 36.0 * s, [255, 255, 255, 255],
             );
+            
+        }
+
+        if self.show_judgements {
+            let c = self.stats.counts[n];
+            let order = [
+                Grade::Perfect, Grade::Great, Grade::Good,
+                Grade::Ok, Grade::Meh, Grade::Miss,
+            ];
+            let top = 44.0 * s; // space above is left for a health bar
+            let row = 26.0 * s;
+            let dh = 20.0 * s;
+            for (i, g) in order.iter().enumerate() {
+                let y = top + i as f32 * row;
+                fill(pm, 20.0 * s, y + 3.0 * s, 14.0 * s, 14.0 * s, grade_color(*g));
+                let txt = c[i].to_string();
+                let cx = 46.0 * s + text_w(&txt, dh) / 2.0;
+                number(pm, &txt, cx, y, dh, [255, 255, 255, 230]);
+            }
         }
 
         if self.show_err {
@@ -270,11 +322,13 @@ pub fn render(
         col_w,
         hit_y: h * st.hit_position.clamp(0.3, 0.97),
         note_h: 22.0 * s,
-        px_per_ms: st.scroll_speed * s,
+        px_per_unit: 0.8375 * h * st.mania_speed.clamp(1.0, 40.0) / 11485.0 / rate as f32,
+        scroll: build_scroll(bm, st.use_sv),
         show_combo: st.show_combo,
         show_acc: st.show_accuracy,
         show_err: st.show_hit_error,
         show_progress: st.show_progress,
+        show_judgements: st.show_judgements,
         start_ms, end_ms,
     };
 
