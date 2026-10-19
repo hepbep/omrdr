@@ -1,6 +1,6 @@
 # omrdr (osu! mania renderer)
 
-Just a little app to turn osu! mania replays into mp4 videos.
+Just a little app to turn osu! mania replays into mp4 video running on your own computer.
 
 All you need to do is to drag and drop in an osu! replay file (.osr). The map file is downloaded automatically. 
 The app renders a playfield with combo, accuracy, unstable rate bar, and judgement counts along with the actual replay.
