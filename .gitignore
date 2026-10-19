@@ -2,3 +2,7 @@
 *.osr
 *.osz
 *.mp4
+/replays
+/beatmaps
+/output
+settings.json

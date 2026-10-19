@@ -1,4 +1,4 @@
-use crate::{beatmap::{Beatmap, HitObject}, Frame};
+use crate::{beatmap::{Beatmap, HitObject}, replay::Frame};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Grade { Perfect, Great, Good, Ok, Meh, Miss }
