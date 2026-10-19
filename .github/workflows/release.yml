@@ -21,11 +21,21 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
+          $tag = "${{ github.ref_name }}"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/omrdr.exe dist/
           Copy-Item README.md dist/
           if (Test-Path LICENSE) { Copy-Item LICENSE dist/ }
-          Compress-Archive -Path dist/* -DestinationPath omrdr-${{ github.ref_name }}-windows-x64.zip
+          Compress-Archive -Path dist/* -DestinationPath "omrdr-$tag-windows-x64.zip"
+
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
+          $exe = Get-ChildItem ffmpeg-extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $exe.FullName dist/ffmpeg.exe
+          $lic = Get-ChildItem ffmpeg-extract -Recurse -Filter "LICENSE*" | Select-Object -First 1
+          if ($lic) { Copy-Item $lic.FullName dist/FFMPEG-LICENSE.txt }
+          Set-Content dist/FFMPEG-NOTICE.txt "This package includes FFmpeg (https://ffmpeg.org), a GPL build by BtbN (https://github.com/BtbN/FFmpeg-Builds). FFmpeg's license is in FFMPEG-LICENSE.txt and its source is available at https://ffmpeg.org/download.html. omrdr runs ffmpeg as a separate program."
+          Compress-Archive -Path dist/* -DestinationPath "omrdr-$tag-windows-x64-with-ffmpeg.zip"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

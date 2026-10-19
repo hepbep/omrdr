@@ -6,3 +6,7 @@
 /beatmaps
 /output
 settings.json
+/dist
+/ffmpeg-extract
+ffmpeg.zip
+*.zip
