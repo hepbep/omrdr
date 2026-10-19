@@ -20,4 +20,21 @@ Replays uploaded, beatmaps downloaded, and videos generated are kept in the "rep
 Generated videos are automatically named after the replay, but can be set to a custom title. 
 
 ## How to install
-1. Download the latest release from the [Releases page}(https://github.com/hepbep/omrdr/releases)
+1. Download the latest release from the [Releases page](https://github.com/hepbep/omrdr/releases)
+2. Extract the .zip file anywhere and run the **"omrdr.exe"** file.
+3. Change the settings to your suit your desires.
+4. #click dat **Render video** button. The video will be saved in the "output/" folder in the app's directory.
+                    <img width="567" height="99" alt="image" src="https://github.com/user-attachments/assets/a2beb781-c660-4ef3-a648-bd227fd51b0f" />
+
+**OR**
+
+## Build from source
+Download [Rust](https://rustup.rs). On windows you will also need the Visual Studio C++ build tools. You need to have ffmpeg on ur PATH or next to the built .exe to render.
+```
+git clone https://github.com/hepbep/omrdr.git
+cd omrdr
+cargo run --release
+```
+
+## Disclaimer 
+This is not affiliated at all or endorsed by osu! or ppy. Beatmaps are downloaded from community mirrors and all beatmaps and music belong to their creators.
