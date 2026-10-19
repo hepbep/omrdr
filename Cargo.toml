@@ -1,0 +1,11 @@
+[package]
+name = "omrdr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+lzma-rs = "0.3.0"
+md5 = "0.8.1"
+tiny-skia = "0.12.0"
+zip = "9.0.5"
