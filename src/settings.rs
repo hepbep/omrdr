@@ -23,6 +23,7 @@ pub struct Settings {
     pub show_progress: bool,
     pub osu_client_id: String,
     pub osu_client_secret: String,
+    pub show_health: bool,
 }
 
 impl Default for Settings {
@@ -45,6 +46,7 @@ impl Default for Settings {
             show_progress: true,
             osu_client_id: String::new(),
             osu_client_secret: String::new(),
+            show_health: true,
         }
     }
 }

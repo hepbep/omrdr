@@ -109,6 +109,76 @@ fn scroll_pos(segs: &[(f64, f64, f64)], t: f64) -> f64 {
     sp + (t - st) * sm
 }
 
+/// Health over time, built once from the judgements. The gain and loss numbers
+/// approximate osu!mania's feel, they are not the exact values.
+struct HealthTimeline {
+    /// (time_ms, hp after that judgement), sorted by time.
+    points: Vec<(f64, f32)>,
+}
+
+impl HealthTimeline {
+    /// `hp_drain` is the map's HP value (0-10): higher means harsher losses, slower recovery.
+    fn new(events: &[HitEvent], hp_drain: f32) -> Self {
+        let drain = hp_drain.clamp(0.0, 10.0);
+        let loss_scale = 0.7 + drain * 0.06; // HP 5 -> 1.0, HP 10 -> 1.3
+        let gain_scale = 1.3 - drain * 0.06; // HP 5 -> 1.0, HP 10 -> 0.7
+        let mut sorted: Vec<&HitEvent> = events.iter().collect();
+        sorted.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut hp = 1.0_f32;
+        let mut points = vec![(-1.0e9_f64, 1.0_f32)];
+        for e in sorted {
+            let d = match e.grade {
+                Grade::Perfect => 0.012,
+                Grade::Great => 0.010,
+                Grade::Good => 0.005,
+                Grade::Ok => 0.0,
+                Grade::Meh => -0.030,
+                Grade::Miss => -0.080,
+            };
+            hp += if d >= 0.0 { d * gain_scale } else { d * loss_scale };
+            hp = hp.clamp(0.0, 1.0);
+            points.push((e.time, hp));
+        }
+        Self { points }
+    }
+
+    /// Displayed health (0.0 to 1.0) at a song time, sliding briefly after each change.
+    fn at(&self, t: f64) -> f32 {
+        let idx = self.points.partition_point(|p| p.0 <= t).saturating_sub(1);
+        let (et, to) = self.points[idx];
+        let from = if idx == 0 { to } else { self.points[idx - 1].1 };
+        let k = ((t - et) / 160.0).clamp(0.0, 1.0) as f32;
+        let k = 1.0 - (1.0 - k) * (1.0 - k); // ease out
+        from + (to - from) * k
+    }
+}
+
+fn hp_color(hp: f32) -> Rgba {
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let (r, g, b) = if hp > 0.5 {
+        let t = (hp - 0.5) / 0.5;
+        (lerp(255.0, 80.0, t), lerp(210.0, 220.0, t), lerp(60.0, 110.0, t))
+    } else {
+        (255.0, lerp(60.0, 210.0, hp / 0.5), 60.0)
+    };
+    [r as u8, g as u8, b as u8, 255]
+}
+
+/// Vertical health bar on the right edge, filling from the bottom.
+fn draw_health(pm: &mut Pixmap, hp: f32, w: f32, h: f32) {
+    let hp = hp.clamp(0.0, 1.0);
+    let bar_w = (w * 0.012).max(8.0).round();
+    let bar_h = (h * 0.62).round();
+    let x = (w - (w * 0.02).round() - bar_w).round();
+    let y = ((h - bar_h) * 0.5).round();
+    let b = (bar_w * 0.18).max(2.0).round();
+    fill(pm, x - b, y - b, bar_w + 2.0 * b, bar_h + 2.0 * b, [255, 255, 255, 200]);
+    fill(pm, x, y, bar_w, bar_h, [15, 15, 15, 230]);
+    let fh = (bar_h * hp).round();
+    fill(pm, x, y + bar_h - fh, bar_w, fh, hp_color(hp));
+}
+
 struct Scene<'a> {
     bm: &'a Beatmap,
     frames: &'a [Frame],
@@ -130,6 +200,8 @@ struct Scene<'a> {
     show_err: bool,
     show_progress: bool,
     show_judgements: bool,
+    show_health: bool,
+    health: HealthTimeline,
     start_ms: f64,
     end_ms: f64,
 }
@@ -264,6 +336,10 @@ impl Scene<'_> {
             fill(pm, cx - 1.5 * s, bar_y - 4.0 * s, 3.0 * s, 28.0 * s, [255, 255, 255, 255]);
         }
 
+        if self.show_health {
+            draw_health(pm, self.health.at(now), w, h);
+        }
+
         if self.show_progress {
             let prog = ((now - self.start_ms) / (self.end_ms - self.start_ms)).clamp(0.0, 1.0) as f32;
             fill(pm, 0.0, 0.0, w * prog, 4.0 * s, [120, 160, 255, 255]);
@@ -314,6 +390,7 @@ pub fn render(
     for e in events {
         results.insert((e.column, e.note_time), (e.time, e.grade));
     }
+    let health = HealthTimeline::new(events, 5.0);
     let col_w = st.column_width * s;
     let scene = Scene {
         bm, frames, events, stats, results, keys,
@@ -329,6 +406,8 @@ pub fn render(
         show_err: st.show_hit_error,
         show_progress: st.show_progress,
         show_judgements: st.show_judgements,
+        show_health: st.show_health,
+        health,
         start_ms, end_ms,
     };
 

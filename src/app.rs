@@ -372,6 +372,7 @@ impl eframe::App for App {
                     ui.checkbox(&mut st.show_hit_error, "Show hit error bar");
                     ui.checkbox(&mut st.show_progress, "Show progress bar");
                     ui.checkbox(&mut st.show_judgements, "Show judgement counts");
+                    ui.checkbox(&mut st.show_health, "Show health bar");
 
                     ui.separator();
                     ui.label(format!("Data folder: {}", st.data_dir.display()));
