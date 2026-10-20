@@ -24,6 +24,8 @@ pub struct Settings {
     pub osu_client_id: String,
     pub osu_client_secret: String,
     pub show_health: bool,
+    pub use_osu_songs: bool, // look in the osu!(stable) Songs folder before downloading
+    pub osu_dir: PathBuf,    // osu! install folder, empty if not set
 }
 
 impl Default for Settings {
@@ -47,6 +49,8 @@ impl Default for Settings {
             osu_client_id: String::new(),
             osu_client_secret: String::new(),
             show_health: true,
+            use_osu_songs: true,
+            osu_dir: crate::library::detect_osu_dir().unwrap_or_default(),
         }
     }
 }

@@ -165,14 +165,15 @@ fn hp_color(hp: f32) -> Rgba {
     [r as u8, g as u8, b as u8, 255]
 }
 
-/// Vertical health bar on the right edge, filling from the bottom.
-fn draw_health(pm: &mut Pixmap, hp: f32, w: f32, h: f32) {
+/// Vertical health bar, filling from the bottom. `x` is the bar's left edge,
+/// `s` is the resolution scale (1.0 at 720p).
+fn draw_health(pm: &mut Pixmap, hp: f32, x: f32, h: f32, s: f32) {
     let hp = hp.clamp(0.0, 1.0);
-    let bar_w = (w * 0.012).max(8.0).round();
+    let bar_w = (12.0 * s).round().max(6.0);
     let bar_h = (h * 0.62).round();
-    let x = (w - (w * 0.02).round() - bar_w).round();
     let y = ((h - bar_h) * 0.5).round();
-    let b = (bar_w * 0.18).max(2.0).round();
+    let b = (2.0 * s).round().max(2.0);
+    let x = x.round();
     fill(pm, x - b, y - b, bar_w + 2.0 * b, bar_h + 2.0 * b, [255, 255, 255, 200]);
     fill(pm, x, y, bar_w, bar_h, [15, 15, 15, 230]);
     let fh = (bar_h * hp).round();
@@ -337,7 +338,7 @@ impl Scene<'_> {
         }
 
         if self.show_health {
-            draw_health(pm, self.health.at(now), w, h);
+            draw_health(pm, self.health.at(now), x0 + field_w + 16.0 * s, h, s);
         }
 
         if self.show_progress {

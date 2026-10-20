@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{
     beatmap::{self, Beatmap},
-    fetch, render,
+    fetch, library::{self, MapSource}, render,
     replay::{self, Replay},
     settings::Settings,
     sim,
@@ -16,7 +16,7 @@ use crate::{
 pub struct Prepared {
     pub replay: Replay,
     pub replay_path: PathBuf,
-    pub osz: PathBuf,
+    pub source: MapSource,
     pub bm: Beatmap,
     pub diff_file: String,
     pub split: sim::Split,
@@ -51,10 +51,29 @@ pub fn prepare(osr: &Path, st: &Settings, log: &dyn Fn(String)) -> Result<Prepar
     }
     log(format!("replay by {}, map hash {}", replay.player, replay.beatmap_md5));
 
-    let osz = fetch::ensure_beatmap(&replay.beatmap_md5, st, log)?;
-    let (bm, diff_file) = beatmap::load_from_osz(&osz, &replay.beatmap_md5)?;
+    // 1. your osu! Songs folder, 2. the beatmaps folder, 3. download from a mirror.
+    let local = library::find(&replay.beatmap_md5, st, log).and_then(|(dir, file)| {
+        let parsed = fs::read(dir.join(&file))
+            .map_err(anyhow::Error::from)
+            .and_then(|b| beatmap::parse_beatmap(&String::from_utf8_lossy(&b)));
+        match parsed {
+            Ok(bm) => Some((dir, file, bm)),
+            Err(e) => {
+                log(format!("could not read it from your osu! folder: {e:#}"));
+                None
+            }
+        }
+    });
+    let (source, bm, diff_file) = match local {
+        Some((dir, file, bm)) => (MapSource::Folder(dir), bm, file),
+        None => {
+            let osz = fetch::ensure_beatmap(&replay.beatmap_md5, st, log)?;
+            let (bm, diff_file) = beatmap::load_from_osz(&osz, &replay.beatmap_md5)?;
+            (MapSource::Osz(osz), bm, diff_file)
+        }
+    };
     let split = sim::simulate(&bm, &replay.frames);
-    Ok(Prepared { replay, replay_path, osz, bm, diff_file, split })
+    Ok(Prepared { replay, replay_path, source, bm, diff_file, split })
 }
 
 pub fn sim_totals(s: &sim::Split) -> [u32; 6] {
@@ -149,7 +168,7 @@ pub fn render_job(
         .and_then(|e| e.to_str())
         .unwrap_or("mp3");
     let audio = env::temp_dir().join(format!("omrdr_audio_{}.{ext}", std::process::id()));
-    beatmap::extract_audio(&p.osz, &p.bm.audio_file, &audio)?;
+    p.source.extract_audio(&p.bm.audio_file, &audio)?;
 
     let res = render::render(
         &p.bm, &p.replay.frames, &p.split.events, &stats,

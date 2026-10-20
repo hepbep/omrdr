@@ -8,6 +8,7 @@ mod render;
 mod replay;
 mod settings;
 mod sim;
+mod library;
 
 use eframe::egui;
 

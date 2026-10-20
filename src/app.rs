@@ -43,6 +43,7 @@ pub struct App {
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
     confirm_clear: bool,
+    show_osu: bool,
 }
 
 impl App {
@@ -54,6 +55,7 @@ impl App {
             settings,
             dirty: false,
             confirm_clear: false,
+            show_osu: false,
             stage: Stage::Idle,
             prepared: None,
             replay_path: None,
@@ -168,6 +170,95 @@ impl App {
         });
     }
 
+    /// The little "osu! beatmaps" settings window (a real second window).
+    fn osu_window(&mut self, ctx: &egui::Context) {
+        if !self.show_osu {
+            return;
+        }
+        let mut close = false;
+        let builder = egui::ViewportBuilder::default()
+            .with_title("omrdr - osu! beatmaps")
+            .with_inner_size([520.0, 280.0])
+            .with_min_inner_size([420.0, 220.0]);
+        let st = &mut self.settings;
+
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("omrdr_osu_window"),
+            builder,
+            |ui, _class| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.heading("osu! beatmaps");
+                    ui.add_space(4.0);
+                    ui.checkbox(
+                        &mut st.use_osu_songs,
+                        "Use beatmaps from my osu! install first (downloads are the backup)",
+                    );
+                    ui.add_space(6.0);
+
+                    ui.label("osu! folder (the one containing osu!.exe and Songs)");
+                    ui.horizontal(|ui| {
+                        let shown = if st.osu_dir.as_os_str().is_empty() {
+                            "(not set)".to_string()
+                        } else {
+                            st.osu_dir.display().to_string()
+                        };
+                        ui.monospace(shown);
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Browse...").clicked() {
+                            if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                                st.osu_dir = d;
+                            }
+                        }
+                        if ui.button("Auto-detect").clicked() {
+                            if let Some(d) = crate::library::detect_osu_dir() {
+                                st.osu_dir = d;
+                            }
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    match crate::library::songs_dir(&st.osu_dir) {
+                        Some(songs) => {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_GREEN,
+                                format!("Songs folder found: {}", songs.display()),
+                            );
+                        }
+                        None if st.osu_dir.as_os_str().is_empty() => {
+                            ui.label("Pick your osu! folder, or press Auto-detect.");
+                        }
+                        None => {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_RED,
+                                "No Songs folder in that location. Pick the folder that contains osu!.exe.",
+                            );
+                        }
+                    }
+
+                    ui.add_space(6.0);
+                    ui.small(
+                        "osu!(stable) only for now. Beatmaps are read in place: nothing is copied \
+                         into, changed or deleted in your osu! folder. If a map isn't there, omrdr \
+                         downloads it from a mirror like before.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+
+                if ui.ctx().input(|i| i.viewport().close_requested()) {
+                    close = true;
+                }
+            },
+        );
+
+        if close {
+            self.show_osu = false;
+        }
+    }
+
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let files: Vec<PathBuf> = ctx.input(|i| {
             i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect()
@@ -202,6 +293,8 @@ impl eframe::App for App {
         let (mut want_render, mut want_cancel, mut pick_replay, mut pick_osz) =
             (false, false, false, false);
         let mut want_clear = false;
+        let mut open_osu = false;
+        self.osu_window(ctx);
 
         egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -382,6 +475,9 @@ impl eframe::App for App {
                                 st.data_dir = d;
                             }
                         }
+                        if ui.button("osu! beatmaps...").clicked() {
+                            open_osu = true;
+                        }
                         if ui.button("Replays").clicked() {
                             let _ = open::that(st.replays_dir());
                         }
@@ -452,6 +548,9 @@ impl eframe::App for App {
             });
         });
 
+        if open_osu {
+            self.show_osu = true;
+        }
         if self.settings != before {
             self.dirty = true;
             if self.settings.data_dir != before.data_dir {
@@ -477,10 +576,6 @@ impl eframe::App for App {
             self.cancel.store(true, Ordering::Relaxed);
         }
         if want_render {
-            self.start_render(ctx);
-        }
-
-                if want_render {
             self.start_render(ctx);
         }
         if want_clear && !self.busy() {
