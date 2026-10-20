@@ -14,12 +14,13 @@ You can currently change settings for things such as:
 - hit line height
 - music volume
 - video quality
+- health bar visibility
 
 Replays uploaded, beatmaps downloaded, and videos generated are kept in the "replays/", "beatmaps/", and "output/" in the app's directory.
 
 Generated videos are automatically named after the replay, but can be set to a custom title. 
 
-## How to install
+## How to use
 1. Download the latest release from the [Releases page](https://github.com/hepbep/omrdr/releases)
 2. Extract the .zip file anywhere and run the **"omrdr.exe"** file.
 3. Change the settings to your suit your desires.
