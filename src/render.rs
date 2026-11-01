@@ -215,6 +215,17 @@ fn tile(pm: &mut Pixmap, img: &Pixmap, x: f32, y: f32, h: f32, anchor_y: f32, op
     pm.fill_rect(r, &paint, Transform::identity(), None);
 }
 
+fn flip_v(mut img: Pixmap) -> Pixmap {
+    let row = img.width() as usize * 4;
+    let rows = img.height() as usize;
+    let data = img.data_mut();
+    for y in 0..rows / 2 {
+        let (top, bot) = data.split_at_mut((rows - 1 - y) * row);
+        top[y * row..(y + 1) * row].swap_with_slice(&mut bot[..row]);
+    }
+    img
+}
+
 /// Digits from a skin font (`score-0.png` ...), scaled to one height.
 struct Font {
     glyphs: HashMap<char, Pixmap>,
@@ -372,10 +383,16 @@ impl Look {
             let art = &mut look.cols[c];
             art.note = fit(skin.sprite(&note_name), cw, None);
             art.head = fit(skin.sprite(&get(&format!("NoteImage{c}H"), format!("mania-note{kind}H"))), cw, None);
-            art.tail = fit(skin.sprite(&get(&format!("NoteImage{c}T"), format!("mania-note{kind}T"))), cw, None);
+            // Tails are drawn upside down in downscroll, as osu! does.
+            art.tail = fit(skin.sprite(&get(&format!("NoteImage{c}T"), format!("mania-note{kind}T"))), cw, None)
+                .map(flip_v);
             art.body = fit(skin.sprite(&get(&format!("NoteImage{c}L"), format!("mania-note{kind}L"))), cw, None);
-            art.key_up = fit(skin.sprite(&get(&format!("KeyImage{c}"), format!("mania-key{kind}"))), cw, None);
-            art.key_down = fit(skin.sprite(&get(&format!("KeyImage{c}D"), format!("mania-key{kind}D"))), cw, None);
+            // Keys stretch to the column width but keep their height in screen scale, not aspect.
+            let key = |name: String| {
+                skin.sprite(&name).and_then(|i| i.pixmap(cw, i.size().1 * k, None))
+            };
+            art.key_up = key(get(&format!("KeyImage{c}"), format!("mania-key{kind}")));
+            art.key_down = key(get(&format!("KeyImage{c}D"), format!("mania-key{kind}D")));
             art.light = skin.sprite(&get("StageLight", "mania-stage-light".into())).and_then(|i| {
                 i.pixmap(cw, i.size().1 * u, Some(light_colour))
             });
