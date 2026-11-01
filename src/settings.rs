@@ -16,6 +16,7 @@ pub struct Settings {
     pub column_width: f32, // pixels at 720p
     pub hit_position: f32, // hit line as a fraction of the height
     pub quality_crf: u32,  // x264 quality, lower is better
+    pub encode_preset: String, // x264 preset: faster ones make bigger files
     pub music_volume: f32,
     pub show_combo: bool,
     pub show_accuracy: bool,
@@ -45,6 +46,7 @@ impl Default for Settings {
             column_width: 64.0,
             hit_position: 0.83,
             quality_crf: 18,
+            encode_preset: "veryfast".into(),
             music_volume: 1.0,
             show_combo: true,
             show_accuracy: true,

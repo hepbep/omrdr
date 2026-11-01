@@ -485,6 +485,23 @@ impl eframe::App for App {
                         egui::Slider::new(&mut st.quality_crf, 14..=28)
                             .text("Video quality (lower is better, bigger file)"),
                     );
+                    egui::ComboBox::from_label("Encoding speed")
+                        .selected_text(match st.encode_preset.as_str() {
+                            "superfast" => "Faster (bigger file)",
+                            "ultrafast" => "Fastest (much bigger file)",
+                            _ => "Normal",
+                        })
+                        .show_ui(ui, |ui| {
+                            for (p, label) in [
+                                ("veryfast", "Normal"),
+                                ("superfast", "Faster (bigger file)"),
+                                ("ultrafast", "Fastest (much bigger file)"),
+                            ] {
+                                if ui.selectable_label(st.encode_preset == p, label).clicked() {
+                                    st.encode_preset = p.into();
+                                }
+                            }
+                        });
                     ui.checkbox(&mut st.show_combo, "Show combo");
                     ui.checkbox(&mut st.show_accuracy, "Show accuracy");
                     ui.checkbox(&mut st.show_hit_error, "Show hit error bar");

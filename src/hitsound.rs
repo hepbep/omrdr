@@ -10,7 +10,6 @@ use std::{
     io::{BufWriter, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    rc::Rc,
 };
 
 use anyhow::Result;
@@ -25,10 +24,10 @@ use crate::{
 
 pub const RATE: u32 = 44100;
 
-type Clip = Rc<Vec<f32>>; // interleaved stereo at RATE
+type Clip = usize; // index into Bank::files
 
-/// Decodes any audio file ffmpeg understands.
-fn decode(path: &Path) -> Option<Clip> {
+/// Decodes any audio file ffmpeg understands to interleaved stereo at RATE.
+fn decode(path: &Path) -> Option<Vec<f32>> {
     let mut cmd = Command::new(crate::render::ffmpeg_path());
     cmd.args(["-v", "error", "-i"])
         .arg(path)
@@ -41,22 +40,38 @@ fn decode(path: &Path) -> Option<Clip> {
         return None;
     }
     let pcm = out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-    Some(Rc::new(pcm.collect()))
+    Some(pcm.collect())
 }
 
-/// Decoded samples from the skin and the beatmap, each loaded once.
+enum SoundFile {
+    Skin(PathBuf),
+    Map(Vec<u8>, String), // file bytes and extension
+}
+
+/// The sound files a render needs, from the skin and the beatmap. Files are
+/// only found here; `decode_all` decodes them afterwards, in parallel.
 struct Bank<'a> {
     skin: Option<&'a Skin>,
     map: &'a MapSource,
-    cache: HashMap<String, Option<Clip>>,
+    found: HashMap<String, Option<Clip>>,
+    files: Vec<SoundFile>,
 }
 
 impl Bank<'_> {
+    fn add(&mut self, key: String, file: Option<SoundFile>) -> Option<Clip> {
+        let clip = file.map(|f| {
+            self.files.push(f);
+            self.files.len() - 1
+        });
+        self.found.insert(key, clip);
+        clip
+    }
+
     /// A file from the beatmap. `name` may lack an extension.
     fn map(&mut self, name: &str) -> Option<Clip> {
         let key = format!("map:{}", name.to_lowercase());
-        if let Some(c) = self.cache.get(&key) {
-            return c.clone();
+        if let Some(c) = self.found.get(&key) {
+            return *c;
         }
         let has_ext = Path::new(name).extension().is_some();
         let names: Vec<String> = if has_ext {
@@ -64,27 +79,47 @@ impl Bank<'_> {
         } else {
             ["wav", "ogg", "mp3"].iter().map(|e| format!("{name}.{e}")).collect()
         };
-        let clip = names.iter().find_map(|n| {
+        let file = names.iter().find_map(|n| {
             let bytes = self.map.read_file(n)?;
             let ext = Path::new(n).extension()?.to_string_lossy().into_owned();
-            let tmp = env::temp_dir().join(format!("omrdr_hs_{}.{ext}", std::process::id()));
-            fs::write(&tmp, bytes).ok()?;
-            let c = decode(&tmp);
-            let _ = fs::remove_file(&tmp);
-            c
+            Some(SoundFile::Map(bytes, ext))
         });
-        self.cache.insert(key, clip.clone());
-        clip
+        self.add(key, file)
     }
 
     fn skin(&mut self, name: &str) -> Option<Clip> {
         let key = format!("skin:{}", name.to_lowercase());
-        if let Some(c) = self.cache.get(&key) {
-            return c.clone();
+        if let Some(c) = self.found.get(&key) {
+            return *c;
         }
-        let clip = self.skin.and_then(|s| s.sound(name)).and_then(|p| decode(&p));
-        self.cache.insert(key, clip.clone());
-        clip
+        let file = self.skin.and_then(|s| s.sound(name)).map(SoundFile::Skin);
+        self.add(key, file)
+    }
+
+    /// Decodes every file, a few ffmpeg processes at a time.
+    fn decode_all(&self) -> Vec<Option<Vec<f32>>> {
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+        let mut out: Vec<Option<Vec<f32>>> = (0..self.files.len()).map(|_| None).collect();
+        std::thread::scope(|sc| {
+            for (t, slots) in out.chunks_mut(self.files.len().div_ceil(threads).max(1)).enumerate() {
+                let first = t * self.files.len().div_ceil(threads).max(1);
+                sc.spawn(move || {
+                    for (j, slot) in slots.iter_mut().enumerate() {
+                        *slot = match &self.files[first + j] {
+                            SoundFile::Skin(p) => decode(p),
+                            SoundFile::Map(bytes, ext) => {
+                                let tmp = env::temp_dir()
+                                    .join(format!("omrdr_hs_{}_{}.{ext}", std::process::id(), first + j));
+                                let c = fs::write(&tmp, bytes).ok().and_then(|_| decode(&tmp));
+                                let _ = fs::remove_file(&tmp);
+                                c
+                            }
+                        };
+                    }
+                });
+            }
+        });
+        out
     }
 }
 
@@ -171,11 +206,9 @@ pub fn build(
         }
     }
 
-    let len = (seconds.max(0.0) * RATE as f64) as usize * 2;
-    let mut mix = vec![0.0_f32; len];
-    let mut bank = Bank { skin, map: source, cache: HashMap::new() };
+    let mut bank = Bank { skin, map: source, found: HashMap::new(), files: Vec::new() };
     let mut sounds: HashMap<(usize, i32), (Vec<Clip>, f32)> = HashMap::new();
-    let mut played = 0usize;
+    let mut hits: Vec<(usize, Clip, f32)> = Vec::new(); // sample position, clip, gain
 
     for (col, objs) in columns.iter().enumerate() {
         if objs.is_empty() {
@@ -204,18 +237,23 @@ pub fn build(
             if at < 0.0 {
                 continue;
             }
-            let at = at as usize * 2;
-            let gain = *vol * master;
-            for c in clips.iter() {
-                if at >= mix.len() {
-                    break;
-                }
-                for (d, s) in mix[at..].iter_mut().zip(c.iter()) {
-                    *d += s * gain;
-                }
-                played += 1;
-            }
+            hits.extend(clips.iter().map(|&c| (at as usize * 2, c, *vol * master)));
         }
+    }
+
+    let decoded = bank.decode_all();
+    let len = (seconds.max(0.0) * RATE as f64) as usize * 2;
+    let mut mix = vec![0.0_f32; len];
+    let mut played = 0usize;
+    for (at, clip, gain) in hits {
+        let Some(pcm) = &decoded[clip] else { continue };
+        if at >= mix.len() {
+            continue;
+        }
+        for (d, s) in mix[at..].iter_mut().zip(pcm) {
+            *d += s * gain;
+        }
+        played += 1;
     }
 
     if played == 0 {

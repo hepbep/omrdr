@@ -3,7 +3,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 use anyhow::{anyhow, bail, Result};
 use tiny_skia::{
@@ -764,6 +767,35 @@ impl Scene<'_> {
     }
 }
 
+/// Converts a frame to yuv420p (BT.601, limited range, same as ffmpeg's default) so the
+/// conversion runs on the drawing threads and the pipe carries 1.5 bytes a pixel, not 4.
+/// Frames are fully opaque, so the premultiplied colours are the plain colours.
+fn to_yuv420p(pm: &Pixmap, out: &mut [u8]) {
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let px = pm.data();
+    let (y_plane, uv) = out.split_at_mut(w * h);
+    let (u_plane, v_plane) = uv.split_at_mut(w * h / 4);
+    for (i, p) in px.chunks_exact(4).enumerate() {
+        let (r, g, b) = (p[0] as i32, p[1] as i32, p[2] as i32);
+        y_plane[i] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
+    }
+    for cy in 0..h / 2 {
+        for cx in 0..w / 2 {
+            let (mut r, mut g, mut b) = (0, 0, 0);
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let o = ((cy * 2 + dy) * w + cx * 2 + dx) * 4;
+                r += px[o] as i32;
+                g += px[o + 1] as i32;
+                b += px[o + 2] as i32;
+            }
+            let (r, g, b) = ((r + 2) / 4, (g + 2) / 4, (b + 2) / 4);
+            let c = cy * (w / 2) + cx;
+            u_plane[c] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128) as u8;
+            v_plane[c] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
+        }
+    }
+}
+
 pub(crate) fn ffmpeg_path() -> PathBuf {
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     let mut spots = Vec::new();
@@ -841,7 +873,7 @@ pub fn render(
     };
 
     let mut cmd = Command::new(ffmpeg_path());
-    cmd.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba"])
+    cmd.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p"])
         .arg("-s").arg(format!("{wi}x{hi}"))
         .arg("-framerate").arg(fps.to_string())
         .args(["-i", "-"]);
@@ -881,7 +913,11 @@ pub fn render(
         cmd.args(["-map", "0:v", "-map", "[aout]"]);
         cmd.args(["-c:a", "aac", "-b:a", "192k", "-shortest"]);
     }
-    cmd.args(["-c:v", "libx264", "-preset", "veryfast"])
+    let preset = match st.encode_preset.as_str() {
+        p @ ("superfast" | "ultrafast") => p,
+        _ => "veryfast",
+    };
+    cmd.args(["-c:v", "libx264", "-preset", preset])
         .arg("-crf").arg(st.quality_crf.clamp(10, 35).to_string())
         .args(["-pix_fmt", "yuv420p"])
         .arg(out)
@@ -893,24 +929,63 @@ pub fn render(
         anyhow!("could not start ffmpeg ({e}). Put ffmpeg.exe next to omrdr.exe or install it on your PATH.")
     })?;
     let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("no ffmpeg stdin"))?;
-    let mut pm = Pixmap::new(wi, hi).ok_or_else(|| anyhow!("could not create the frame buffer"))?;
+    // Frames are drawn on several threads, worker `w` doing frames w, w + n, w + 2n...,
+    // and written to ffmpeg in order. A few cores are left free for x264.
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .saturating_sub(2)
+        .clamp(1, 8);
+    let frame_time = move |i: u64| start_ms + i as f64 * 1000.0 / fps as f64 * rate;
+    let cancelled = std::thread::scope(|sc| -> Result<bool> {
+        let mut done = Vec::new();
+        let mut free = Vec::new();
+        for w in 0..workers {
+            let (done_tx, done_rx) = mpsc::sync_channel::<Vec<u8>>(2);
+            let (free_tx, free_rx) = mpsc::channel::<Vec<u8>>();
+            for _ in 0..3 {
+                let _ = free_tx.send(vec![0; (wi * hi * 3 / 2) as usize]);
+            }
+            let mut pm = Pixmap::new(wi, hi).ok_or_else(|| anyhow!("could not create the frame buffer"))?;
+            let scene = &scene;
+            sc.spawn(move || {
+                let mut i = w as u64;
+                while i < total {
+                    // Either channel closing means the render stopped early.
+                    let Ok(mut yuv) = free_rx.recv() else { return };
+                    scene.draw(&mut pm, frame_time(i));
+                    to_yuv420p(&pm, &mut yuv);
+                    if done_tx.send(yuv).is_err() {
+                        return;
+                    }
+                    i += workers as u64;
+                }
+            });
+            done.push(done_rx);
+            free.push(free_tx);
+        }
 
-    for i in 0..total {
-        if cancel.load(Ordering::Relaxed) {
-            drop(stdin);
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_file(out);
-            bail!("cancelled");
+        for i in 0..total {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(true);
+            }
+            let w = (i % workers as u64) as usize;
+            let yuv = done[w].recv().map_err(|_| anyhow!("a drawing thread stopped"))?;
+            if stdin.write_all(&yuv).is_err() {
+                break; // ffmpeg stopped, its message is read below
+            }
+            let _ = free[w].send(yuv);
+            if i % 15 == 0 {
+                progress(i, total);
+            }
         }
-        let now = start_ms + i as f64 * 1000.0 / fps as f64 * rate;
-        scene.draw(&mut pm, now);
-        if stdin.write_all(pm.data()).is_err() {
-            break; // ffmpeg stopped, its message is read below
-        }
-        if i % 15 == 0 {
-            progress(i, total);
-        }
+        Ok(false)
+    })?;
+    if cancelled {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(out);
+        bail!("cancelled");
     }
     drop(stdin);
     let status = child.wait()?;
