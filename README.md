@@ -15,6 +15,8 @@ You can currently change settings for things such as:
 - music volume
 - video quality
 - health bar visibility
+- skin: any osu!(stable) skin from your Skins folder or a dropped .osk (mania notes, keys, stage, judgements, lighting, combo font and hitsounds)
+- hitsound volume, and whether the beatmap's own hitsounds are used
 
 Replays uploaded, beatmaps downloaded, and videos generated are kept in the "replays/", "beatmaps/", and "output/" in the app's directory.
 

@@ -7,10 +7,11 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{
     beatmap::{self, Beatmap},
-    fetch, library::{self, MapSource}, render,
+    fetch, hitsound, library::{self, MapSource}, render,
     replay::{self, Replay},
     settings::Settings,
     sim,
+    skin::Skin,
 };
 
 pub struct Prepared {
@@ -147,6 +148,7 @@ pub fn render_job(
     out: &Path,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, u64),
+    log: &dyn Fn(String),
 ) -> Result<()> {
     st.ensure_dirs()?;
 
@@ -170,11 +172,41 @@ pub fn render_job(
     let audio = env::temp_dir().join(format!("omrdr_audio_{}.{ext}", std::process::id()));
     p.source.extract_audio(&p.bm.audio_file, &audio)?;
 
+    // A broken skin shouldn't stop the render, it just falls back to the built-in look.
+    let skin = if st.skin_dir.as_os_str().is_empty() {
+        None
+    } else {
+        match Skin::load(&st.skin_dir) {
+            Ok(s) => {
+                let mania = if s.mania(p.bm.keys).is_some() { "has" } else { "has no" };
+                log(format!("skin: {} ({mania} {}K settings)", s.name, p.bm.keys));
+                Some(s)
+            }
+            Err(e) => {
+                log(format!("could not load the skin, using the built-in look: {e:#}"));
+                None
+            }
+        }
+    };
+
+    let (start_ms, end_ms) = render::timeline(&p.bm);
+    let seconds = (end_ms - start_ms) / rate / 1000.0 + 1.0;
+    let hitsounds = hitsound::build(
+        &p.bm, &p.replay.frames, &p.source, skin.as_ref(), st, start_ms, rate, seconds, log,
+    )
+    .unwrap_or_else(|e| {
+        log(format!("could not make the hitsound track: {e:#}"));
+        None
+    });
+
     let res = render::render(
         &p.bm, &p.replay.frames, &p.split.events, &stats,
-        Some(&audio), rate, st, out, cancel, progress,
+        Some(&audio), hitsounds.as_deref(), skin.as_ref(), rate, st, out, cancel, progress,
     );
     let _ = fs::remove_file(&audio);
+    if let Some(h) = hitsounds {
+        let _ = fs::remove_file(h);
+    }
     res
 }
 

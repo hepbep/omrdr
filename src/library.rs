@@ -35,6 +35,22 @@ impl MapSource {
             }
         }
     }
+
+    /// Reads a file from the top of the beatmap folder (e.g. a custom hitsound), any case.
+    pub fn read_file(&self, name: &str) -> Option<Vec<u8>> {
+        match self {
+            MapSource::Osz(p) => {
+                let mut zip = zip::ZipArchive::new(fs::File::open(p).ok()?).ok()?;
+                let idx = (0..zip.len()).find(|&i| {
+                    matches!(zip.name_for_index(i), Some(Ok(n)) if n.eq_ignore_ascii_case(name))
+                })?;
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut zip.by_index(idx).ok()?, &mut bytes).ok()?;
+                Some(bytes)
+            }
+            MapSource::Folder(dir) => fs::read(find_file_ci(dir, name)?).ok(),
+        }
+    }
 }
 
 fn find_file_ci(dir: &Path, name: &str) -> Option<PathBuf> {

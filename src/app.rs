@@ -44,6 +44,7 @@ pub struct App {
     rx: mpsc::Receiver<Msg>,
     confirm_clear: bool,
     show_osu: bool,
+    skins: Vec<PathBuf>, // skin folders found, for the picker
 }
 
 impl App {
@@ -51,11 +52,13 @@ impl App {
         let settings = Settings::load();
         let _ = settings.ensure_dirs();
         let (tx, rx) = mpsc::channel();
+        let skins = crate::skin::list(&settings.osu_dir, &settings.skins_dir());
         Self {
             settings,
             dirty: false,
             confirm_clear: false,
             show_osu: false,
+            skins,
             stage: Stage::Idle,
             prepared: None,
             replay_path: None,
@@ -158,11 +161,15 @@ impl App {
         let (tx, st, ctx, cancel) =
             (self.tx.clone(), self.settings.clone(), ctx.clone(), self.cancel.clone());
         thread::spawn(move || {
+            let log = |s: String| {
+                let _ = tx.send(Msg::Log(s));
+                ctx.request_repaint();
+            };
             let mut progress = |a: u64, b: u64| {
                 let _ = tx.send(Msg::Progress(a, b));
                 ctx.request_repaint();
             };
-            let res = job::render_job(&p, &st, &out, &cancel, &mut progress)
+            let res = job::render_job(&p, &st, &out, &cancel, &mut progress, &log)
                 .map(|_| out.clone())
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::Finished(res));
@@ -259,6 +266,21 @@ impl App {
         }
     }
 
+    fn add_osk(&mut self, path: &Path) {
+        match crate::skin::import_osk(path, &self.settings.skins_dir()) {
+            Ok(dir) => {
+                self.log.push(format!("skin unpacked to {}", dir.display()));
+                self.settings.skin_dir = dir;
+                self.refresh_skins();
+            }
+            Err(e) => self.log.push(format!("could not unpack the .osk: {e:#}")),
+        }
+    }
+
+    fn refresh_skins(&mut self) {
+        self.skins = crate::skin::list(&self.settings.osu_dir, &self.settings.skins_dir());
+    }
+
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let files: Vec<PathBuf> = ctx.input(|i| {
             i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect()
@@ -272,8 +294,9 @@ impl App {
             match ext.as_str() {
                 "osr" => self.start_prepare(ctx, path),
                 "osz" => self.add_osz(ctx, &path),
+                "osk" => self.add_osk(&path),
                 _ => self.log.push(format!(
-                    "ignored {}: drop a .osr replay or an .osz beatmap",
+                    "ignored {}: drop a .osr replay, an .osz beatmap or an .osk skin",
                     path.display()
                 )),
             }
@@ -294,6 +317,8 @@ impl eframe::App for App {
             (false, false, false, false);
         let mut want_clear = false;
         let mut open_osu = false;
+        let mut refresh_skins = false;
+        let mut skin_note: Option<String> = None;
         self.osu_window(ctx);
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -468,6 +493,53 @@ impl eframe::App for App {
                     ui.checkbox(&mut st.show_health, "Show health bar");
 
                     ui.separator();
+                    ui.strong("Skin");
+                    let none = "None (built-in look)";
+                    let current = if st.skin_dir.as_os_str().is_empty() {
+                        none.to_string()
+                    } else {
+                        crate::skin::display_name(&st.skin_dir)
+                    };
+                    egui::ComboBox::from_id_salt("skin")
+                        .selected_text(current)
+                        .width(320.0)
+                        .height(400.0)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(st.skin_dir.as_os_str().is_empty(), none).clicked() {
+                                st.skin_dir = PathBuf::new();
+                            }
+                            for d in &self.skins {
+                                let name = crate::skin::display_name(d);
+                                if ui.selectable_label(st.skin_dir == *d, name).clicked() {
+                                    st.skin_dir = d.clone();
+                                }
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("Use my osu! skin").clicked() {
+                            match crate::skin::current_osu_skin(&st.osu_dir) {
+                                Some(d) => st.skin_dir = d,
+                                None => skin_note = Some("couldn't find the skin osu! is using".to_string()),
+                            }
+                        }
+                        if ui.button("Browse...").clicked() {
+                            if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                                st.skin_dir = d;
+                            }
+                        }
+                        if ui.button("Refresh list").clicked() {
+                            refresh_skins = true;
+                        }
+                    });
+                    ui.small("Skins come from your osu! Skins folder. You can also drop an .osk file on this window.");
+                    ui.checkbox(
+                        &mut st.skin_layout,
+                        "Use the skin's column widths and hit position (replaces the two sliders above)",
+                    );
+                    ui.add(egui::Slider::new(&mut st.hitsound_volume, 0.0..=1.0).text("Hitsound volume"));
+                    ui.checkbox(&mut st.beatmap_hitsounds, "Use the beatmap's own hitsounds when it has them");
+
+                    ui.separator();
                     ui.label(format!("Data folder: {}", st.data_dir.display()));
                     ui.horizontal(|ui| {
                         if ui.button("Change...").clicked() {
@@ -551,11 +623,20 @@ impl eframe::App for App {
         if open_osu {
             self.show_osu = true;
         }
+        if let Some(n) = skin_note {
+            self.log.push(n);
+        }
         if self.settings != before {
             self.dirty = true;
             if self.settings.data_dir != before.data_dir {
                 let _ = self.settings.ensure_dirs();
             }
+            if self.settings.data_dir != before.data_dir || self.settings.osu_dir != before.osu_dir {
+                refresh_skins = true;
+            }
+        }
+        if refresh_skins {
+            self.refresh_skins();
         }
         if self.dirty && !ctx.input(|i| i.pointer.any_down()) {
             self.settings.save();

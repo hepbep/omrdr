@@ -26,6 +26,10 @@ pub struct Settings {
     pub show_health: bool,
     pub use_osu_songs: bool, // look in the osu!(stable) Songs folder before downloading
     pub osu_dir: PathBuf,    // osu! install folder, empty if not set
+    pub skin_dir: PathBuf,   // osu! skin folder, empty for the built-in look
+    pub skin_layout: bool,   // use the skin's column widths and hit position
+    pub hitsound_volume: f32,
+    pub beatmap_hitsounds: bool, // let the map's own hitsound files replace the skin's
 }
 
 impl Default for Settings {
@@ -51,6 +55,10 @@ impl Default for Settings {
             show_health: true,
             use_osu_songs: true,
             osu_dir: crate::library::detect_osu_dir().unwrap_or_default(),
+            skin_dir: PathBuf::new(),
+            skin_layout: true,
+            hitsound_volume: 0.6,
+            beatmap_hitsounds: true,
         }
     }
 }
@@ -77,6 +85,9 @@ impl Settings {
     }
     pub fn output_dir(&self) -> PathBuf {
         self.data_dir.join("output")
+    }
+    pub fn skins_dir(&self) -> PathBuf {
+        self.data_dir.join("skins")
     }
 
     pub fn ensure_dirs(&self) -> std::io::Result<()> {

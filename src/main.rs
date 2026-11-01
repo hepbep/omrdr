@@ -3,12 +3,14 @@
 mod app;
 mod beatmap;
 mod fetch;
+mod hitsound;
 mod job;
 mod render;
 mod replay;
 mod settings;
 mod sim;
 mod library;
+mod skin;
 
 use eframe::egui;
 

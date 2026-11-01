@@ -6,6 +6,18 @@ pub struct HitObject {
     pub time: i32,
     pub end_time: Option<i32>, // Some(..) for hold notes
     pub column: usize,
+    pub sound: u8, // hitsound bits: 2 whistle, 4 finish, 8 clap
+    pub sample: Sample,
+}
+
+/// A note's own sample settings. Zero means "use the timing point's".
+#[derive(Debug, Default)]
+pub struct Sample {
+    pub normal_set: u8, // 1 normal, 2 soft, 3 drum
+    pub addition_set: u8,
+    pub index: u32,
+    pub volume: u32,
+    pub filename: String,
 }
 
 #[derive(Debug)]
@@ -13,6 +25,9 @@ pub struct TimingPoint {
     pub time: f64,
     pub beat_length: f64, // uninherited: ms per beat, inherited: negative SV multiplier
     pub uninherited: bool,
+    pub sample_set: u8,
+    pub sample_index: u32,
+    pub volume: u32,
 }
 
 #[derive(Debug, Default)]
@@ -23,6 +38,7 @@ pub struct Beatmap {
     pub mode: u8,
     pub keys: usize,
     pub od: f32,
+    pub sample_set: u8, // the map's default set from [General]
     pub timing: Vec<TimingPoint>,
     pub objects: Vec<HitObject>,
 }
@@ -53,6 +69,11 @@ pub fn parse_beatmap(text: &str) -> Result<Beatmap> {
                         "Version" => bm.version = v.to_string(),
                         "CircleSize" => bm.keys = v.parse::<f32>().unwrap_or(4.0) as usize,
                         "OverallDifficulty" => bm.od = v.parse().unwrap_or(5.0),
+                        "SampleSet" => bm.sample_set = match v.to_ascii_lowercase().as_str() {
+                            "soft" => 2,
+                            "drum" => 3,
+                            _ => 1,
+                        },
                         _ => {}
                     }
                 }
@@ -60,10 +81,14 @@ pub fn parse_beatmap(text: &str) -> Result<Beatmap> {
             "TimingPoints" => {
                 let f: Vec<&str> = line.split(',').collect();
                 if f.len() >= 2 {
+                    let int = |i: usize| f.get(i).and_then(|s| s.trim().parse::<i64>().ok());
                     bm.timing.push(TimingPoint {
                         time: f[0].trim().parse()?,
                         beat_length: f[1].trim().parse()?,
                         uninherited: f.get(6).map(|s| s.trim() == "1").unwrap_or(true),
+                        sample_set: int(3).unwrap_or(0).clamp(0, 3) as u8,
+                        sample_index: int(4).unwrap_or(0).max(0) as u32,
+                        volume: int(5).unwrap_or(100).clamp(0, 100) as u32,
                     });
                 }
             }
@@ -83,13 +108,28 @@ pub fn parse_beatmap(text: &str) -> Result<Beatmap> {
         let time: i32 = f[2].parse()?;
         let kind: u32 = f[3].parse()?;
         let column = ((x * keys as i32) / 512).clamp(0, keys as i32 - 1) as usize;
+        let sound = f.get(4).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let mut extra: Vec<&str> = f.get(5).map(|s| s.split(':').collect()).unwrap_or_default();
         let end_time = if kind & 128 != 0 {
             // hold note: "endTime:hitSample" in the 6th field
-            f.get(5).and_then(|s| s.split(':').next()).and_then(|s| s.parse().ok())
+            let end = extra.first().and_then(|s| s.parse().ok());
+            if !extra.is_empty() {
+                extra.remove(0);
+            }
+            end
         } else {
             None
         };
-        bm.objects.push(HitObject { time, end_time, column });
+        // hitSample: normalSet:additionSet:index:volume:filename
+        let num = |i: usize| extra.get(i).and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0);
+        let sample = Sample {
+            normal_set: num(0).clamp(0, 3) as u8,
+            addition_set: num(1).clamp(0, 3) as u8,
+            index: num(2).max(0) as u32,
+            volume: num(3).clamp(0, 100) as u32,
+            filename: extra.get(4).map(|s| s.trim().to_string()).unwrap_or_default(),
+        };
+        bm.objects.push(HitObject { time, end_time, column, sound, sample });
     }
     bm.objects.sort_by_key(|o| o.time);
     Ok(bm)
